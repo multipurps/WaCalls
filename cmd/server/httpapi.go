@@ -36,7 +36,28 @@ func (s *server) routes() http.Handler {
 			mux.Handle("/", http.FileServer(http.Dir(s.staticDir)))
 		}
 	}
-	return withCORS(mux)
+	return withAuth(withCORS(mux))
+}
+
+// This API had no authentication at all before this - anyone who found the
+// URL could create sessions, pair a WhatsApp account, or place calls
+// through it. Matches the pattern already used by this app's other relay
+// (server-social/social-relay.js): a shared secret header, checked before
+// anything else runs. Set WACALLS_INTERNAL_SECRET to enable; if it's unset,
+// this refuses to serve anything rather than silently running open.
+func withAuth(h http.Handler) http.Handler {
+	secret := os.Getenv("WACALLS_INTERNAL_SECRET")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions {
+			h.ServeHTTP(w, r)
+			return
+		}
+		if secret == "" || r.Header.Get("X-Internal-Secret") != secret {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func withCORS(h http.Handler) http.Handler {
