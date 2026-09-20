@@ -20,6 +20,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{sid}", s.handleSessionDelete)
 	mux.HandleFunc("POST /api/sessions/{sid}/logout", s.handleSessionLogout)
 	mux.HandleFunc("POST /api/sessions/{sid}/pair", s.handleSessionPair)
+	mux.HandleFunc("POST /api/sessions/{sid}/pair/code", s.handleSessionPairCode)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls", s.handleStartCall)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls/{id}/webrtc", s.handleWebRTC)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls/{id}/accept", s.handleAccept)
@@ -82,14 +83,15 @@ func (s *server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name string `json:"name"`
+		Name  string `json:"name"`
+		Phone string `json:"phone"` // optional - if set, pairs via numeric code instead of QR
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	name := strings.TrimSpace(body.Name)
 	if name == "" {
 		name = "Session"
 	}
-	id, err := s.sessions.Create(name)
+	id, err := s.sessions.Create(name, strings.TrimSpace(body.Phone))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -115,6 +117,23 @@ func (s *server) handleSessionLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleSessionPair(w http.ResponseWriter, r *http.Request) {
 	if err := s.sessions.Pair(r.PathValue("sid")); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleSessionPairCode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Phone string `json:"phone"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	phone := strings.TrimSpace(body.Phone)
+	if phone == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone required"})
+		return
+	}
+	if err := s.sessions.PairWithCode(r.PathValue("sid"), phone); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

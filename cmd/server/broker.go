@@ -32,6 +32,7 @@ type AuthSnapshot struct {
 	State  string `json:"state"`
 	Paired bool   `json:"paired"`
 	QR     string `json:"qr,omitempty"`
+	Code   string `json:"code,omitempty"` // numeric pairing code, alternative to scanning the QR
 }
 
 type SessionInfo struct {

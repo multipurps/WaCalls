@@ -209,6 +209,28 @@ func (s *Session) startPairing(ctx context.Context) error {
 	return nil
 }
 
+// startPairingWithCode is the numeric-code sibling of startPairing: same
+// underlying whatsmeow client and connection, but requests a short display
+// code via PairPhone instead of opening the QR channel. whatsmeow already
+// supports this natively (used by WhatsApp's own "Link with phone number"
+// flow) - WaCalls just never exposed it. Pairing completion still fires
+// through the client's existing central handleEvent (*events.Connected,
+// registered once in newSession/replaceClient), same as the QR path, so
+// nothing about success detection or session lifecycle needs duplicating
+// here.
+func (s *Session) startPairingWithCode(ctx context.Context, phone string) error {
+	if err := s.client.Connect(); err != nil {
+		return err
+	}
+	code, err := s.client.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	if err != nil {
+		s.client.Disconnect()
+		return err
+	}
+	s.setAuth(AuthSnapshot{State: "code", Code: code})
+	return nil
+}
+
 func (s *Session) setAuth(a AuthSnapshot) {
 	s.mu.Lock()
 	s.auth = a

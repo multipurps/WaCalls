@@ -119,7 +119,7 @@ func (m *SessionManager) Restore(ctx context.Context) error {
 	return nil
 }
 
-func (m *SessionManager) Create(name string) (string, error) {
+func (m *SessionManager) Create(name, phone string) (string, error) {
 	id := newSessionID()
 	if err := m.store.insert(m.appCtx, id, name); err != nil {
 		return "", err
@@ -129,11 +129,17 @@ func (m *SessionManager) Create(name string) (string, error) {
 	s := newSession(m, id, name, client)
 	m.register(s)
 	m.broker.emitSessionList(m.infos())
-	if err := s.startPairing(m.appCtx); err != nil {
-		m.log.Error("start pairing failed", "session", id, "err", err)
-		return "", fmt.Errorf("start pairing: %w", err)
+	var pairErr error
+	if phone != "" {
+		pairErr = s.startPairingWithCode(m.appCtx, phone)
+	} else {
+		pairErr = s.startPairing(m.appCtx)
 	}
-	m.log.Info("session created", "session", id, "name", name)
+	if pairErr != nil {
+		m.log.Error("start pairing failed", "session", id, "err", pairErr)
+		return "", fmt.Errorf("start pairing: %w", pairErr)
+	}
+	m.log.Info("session created", "session", id, "name", name, "method", map[bool]string{true: "code", false: "qr"}[phone != ""])
 	return id, nil
 }
 
@@ -190,6 +196,23 @@ func (m *SessionManager) Pair(id string) error {
 	}
 	m.broker.emitSessionList(m.infos())
 	m.log.Info("session re-pairing", "session", id)
+	return nil
+}
+
+func (m *SessionManager) PairWithCode(id, phone string) error {
+	s, ok := m.Get(id)
+	if !ok {
+		return fmt.Errorf("no session %s", id)
+	}
+	if s.client.Store.ID != nil {
+		return fmt.Errorf("session already paired")
+	}
+	s.replaceClient(whatsmeow.NewClient(m.container.NewDevice(), m.waLogger))
+	if err := s.startPairingWithCode(m.appCtx, phone); err != nil {
+		return fmt.Errorf("start pairing with code: %w", err)
+	}
+	m.broker.emitSessionList(m.infos())
+	m.log.Info("session re-pairing via phone code", "session", id)
 	return nil
 }
 
