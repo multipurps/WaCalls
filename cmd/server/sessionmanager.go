@@ -182,6 +182,14 @@ func (m *SessionManager) Logout(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *SessionManager) Detail(id string) (SessionDetail, bool) {
+	s, ok := m.Get(id)
+	if !ok {
+		return SessionDetail{}, false
+	}
+	return s.detail(), true
+}
+
 func (m *SessionManager) Pair(id string) error {
 	s, ok := m.Get(id)
 	if !ok {

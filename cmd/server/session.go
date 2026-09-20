@@ -250,6 +250,25 @@ func (s *Session) info() SessionInfo {
 	return SessionInfo{ID: s.id, Name: s.name, JID: jid, State: a.State, Paired: a.Paired || jid != ""}
 }
 
+// detail is like info() but also includes the QR/Code fields, which the
+// list-level SessionInfo deliberately omits (those are normally pushed via
+// SSE). A caller that can't hold a persistent SSE connection open - like a
+// stateless serverless function polling on a timer - needs a plain GET that
+// still carries the pairing QR/code, so this exists as that single-session
+// detail view.
+type SessionDetail struct {
+	SessionInfo
+	QR   string `json:"qr,omitempty"`
+	Code string `json:"code,omitempty"`
+}
+
+func (s *Session) detail() SessionDetail {
+	s.mu.Lock()
+	a := s.auth
+	s.mu.Unlock()
+	return SessionDetail{SessionInfo: s.info(), QR: a.QR, Code: a.Code}
+}
+
 func (s *Session) setBridge(callID string, b *Bridge) {
 	oldB, found := s.reg.setBridge(callID, b)
 	if !found {
