@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"os"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"wacalls/internal/wa"
 
 	"github.com/mdp/qrterminal/v3"
+	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
@@ -194,8 +196,20 @@ func (s *Session) startPairing(ctx context.Context) error {
 			case "code":
 				s.log.Info("scan the QR code to pair this session")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
-				s.setAuth(AuthSnapshot{State: "qr", QR: evt.Code})
-				s.mgr.broker.emitSessionQR(s.id, evt.Code)
+				// evt.Code is whatsmeow's raw QR *payload* string, not an
+				// image - setting that directly as an <img src> (which is
+				// what both our Node client and the frontend do, matching
+				// how the old Baileys-based relay worked) would just show
+				// a broken image. Encode it into a real PNG data URL here
+				// so nothing downstream has to change.
+				qrDataURL := ""
+				if png, err := qrcode.Encode(evt.Code, qrcode.Medium, 320); err == nil {
+					qrDataURL = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+				} else {
+					s.log.Error("failed to render QR as PNG", "err", err)
+				}
+				s.setAuth(AuthSnapshot{State: "qr", QR: qrDataURL})
+				s.mgr.broker.emitSessionQR(s.id, qrDataURL)
 			case "success":
 				if id := s.client.Store.ID; id != nil {
 					_ = s.mgr.store.setJID(s.mgr.appCtx, s.id, id.String())
