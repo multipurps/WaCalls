@@ -6,9 +6,24 @@ import (
 	"wacalls/internal/voip/call"
 )
 
+// callAudioSink is whatever the far leg of a call's audio is - a human
+// operator via the browser (Bridge) or the AI assistant (AIBridge).
+// CallManager never sees this type; only cmd/server routes audio through
+// it, via the two methods both concrete types already had before this
+// existed as an interface.
+type callAudioSink interface {
+	WritePCM(pcm []float32) error
+	Close()
+}
+
 type activeCall struct {
 	cm     *call.CallManager
-	bridge *Bridge
+	bridge callAudioSink
+	// Set only when an AIBridge is attached - lets wireCall's OnStateChange
+	// report the call's outcome back to the Audio-call- app when it ends
+	// (see reportRelayOutcome in aioutcome.go). nil for ordinary
+	// browser-operated calls, which have nothing to report back to.
+	aiReport *aiReportInfo
 }
 
 type callRegistry struct {
@@ -50,7 +65,7 @@ func (r *callRegistry) count() int {
 	return len(r.calls)
 }
 
-func (r *callRegistry) setBridge(callID string, b *Bridge) (*Bridge, bool) {
+func (r *callRegistry) setBridge(callID string, b callAudioSink) (callAudioSink, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ac, ok := r.calls[callID]
@@ -60,6 +75,17 @@ func (r *callRegistry) setBridge(callID string, b *Bridge) (*Bridge, bool) {
 	oldB := ac.bridge
 	ac.bridge = b
 	return oldB, true
+}
+
+func (r *callRegistry) setAIReport(callID string, info *aiReportInfo) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ac, ok := r.calls[callID]
+	if !ok {
+		return false
+	}
+	ac.aiReport = info
+	return true
 }
 
 func (r *callRegistry) drain() []*activeCall {
