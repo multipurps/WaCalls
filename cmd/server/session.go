@@ -66,6 +66,9 @@ func (s *Session) wireCall(cm *call.CallManager, callID string) {
 	}
 	cm.OnStateChange = func(c *call.CallInfo) {
 		if c.IsEnded() {
+			if ac, ok := s.reg.get(c.CallID); ok && ac.aiReport != nil {
+				go reportRelayOutcome(s.log, ac.aiReport, c.StateData)
+			}
 			s.removeCall(c.CallID)
 			s.mgr.broker.endCall(c.CallID, string(c.StateData.EndReason))
 			return
@@ -283,7 +286,7 @@ func (s *Session) detail() SessionDetail {
 	return SessionDetail{SessionInfo: s.info(), QR: a.QR, Code: a.Code}
 }
 
-func (s *Session) setBridge(callID string, b *Bridge) {
+func (s *Session) setBridge(callID string, b callAudioSink) {
 	oldB, found := s.reg.setBridge(callID, b)
 	if !found {
 		b.Close()
