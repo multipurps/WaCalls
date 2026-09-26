@@ -16,7 +16,7 @@ func TestSessionStoreRoundtrip(t *testing.T) {
 	}
 	defer db.Close()
 
-	st, err := newSessionStore(ctx, db)
+	st, err := newSessionStore(ctx, db, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ func newTestManager(t *testing.T) *SessionManager {
 	if err := container.Upgrade(ctx); err != nil {
 		t.Fatal(err)
 	}
-	store, err := newSessionStore(ctx, db)
+	store, err := newSessionStore(ctx, db, "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,7 +14,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
-	dbPath := flag.String("db", "wacalls.db", "SQLite session database path")
+	dbPath := flag.String("db", "wacalls.db", "SQLite session database path (used only if DATABASE_URL is unset)")
 	staticDir := flag.String("static", "client/dist", "static client directory (optional)")
 	debug := flag.Bool("debug", false, "verbose logging")
 	maxCalls := flag.Int("max-calls-per-session", 8, "max concurrent calls per session (0 = unlimited)")
