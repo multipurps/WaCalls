@@ -24,6 +24,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{sid}/pair/code", s.handleSessionPairCode)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls", s.handleStartCall)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls/{id}/webrtc", s.handleWebRTC)
+	mux.HandleFunc("POST /api/sessions/{sid}/calls/{id}/ai", s.handleAttachAI)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls/{id}/accept", s.handleAccept)
 	mux.HandleFunc("POST /api/sessions/{sid}/calls/{id}/reject", s.handleReject)
 	mux.HandleFunc("DELETE /api/sessions/{sid}/calls/{id}", s.handleEndCall)
@@ -183,6 +184,12 @@ func (s *server) handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *server) handleAttachAI(w http.ResponseWriter, r *http.Request) {
+	if sess := s.sessionByID(w, r.PathValue("sid")); sess != nil {
+		s.doAttachAI(sess, w, r)
+	}
+}
+
 func (s *server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	if sess := s.sessionByID(w, r.PathValue("sid")); sess != nil {
 		s.doAccept(sess, w, r)
@@ -272,6 +279,60 @@ func (s *server) doWebRTC(sess *Session, w http.ResponseWriter, r *http.Request)
 	}
 	sess.setBridge(callID, bridge)
 	writeJSON(w, http.StatusOK, map[string]string{"sdp_answer": answer})
+}
+
+// doAttachAI is the AI equivalent of doWebRTC: instead of a browser
+// operator negotiating a WebRTC data channel, it connects this call
+// straight to the Pipecat assistant so Emysa can talk on it. Called by
+// Audio-call- right after POST /calls, carrying the app's own chat
+// sessionId/contactName purely so the call's outcome can be reported back
+// into that chat when it ends (see aioutcome.go) - has no bearing on the
+// call itself.
+//
+// UNVERIFIED: never run against a live call or the assistant service.
+func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Request) {
+	callID := r.PathValue("id")
+	ac, ok := sess.reg.get(callID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such call"})
+		return
+	}
+	bridgeURL := os.Getenv("ASSISTANT_BRIDGE_URL")
+	bridgeSecret := os.Getenv("ASSISTANT_BRIDGE_SECRET")
+	if bridgeURL == "" || bridgeSecret == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ASSISTANT_BRIDGE_URL / ASSISTANT_BRIDGE_SECRET not configured"})
+		return
+	}
+	sampleRate := core.DefaultAudioConfig.SampleRate
+
+	var body struct {
+		UserID       string `json:"userId"`
+		AppSessionID string `json:"sessionId"`
+		ContactName  string `json:"contactName"`
+		PeerNumber   string `json:"peerNumber"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	bridgeSessionID := "call-" + callID // ACAF bridge session id - unrelated to the app's own chat sessionId above
+	bridge, err := NewAIBridge(bridgeURL, bridgeSecret, bridgeSessionID, sampleRate, s.log)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not reach assistant: " + err.Error()})
+		return
+	}
+	bridge.OnAssistantPCM = func(pcm []float32) {
+		ac.cm.FeedCapturedPCM(pcm)
+	}
+	bridge.OnEnded = func() {
+		go sess.terminateCall(callID, core.EndCallReasonUserEnded)
+	}
+	sess.setBridge(callID, bridge)
+	sess.reg.setAIReport(callID, &aiReportInfo{
+		AppUserID:      body.UserID,
+		AppSessionID:   body.AppSessionID,
+		ContactName:    body.ContactName,
+		PeerIdentifier: body.PeerNumber,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "attached"})
 }
 
 func (s *server) doAccept(sess *Session, w http.ResponseWriter, r *http.Request) {
