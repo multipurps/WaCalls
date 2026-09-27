@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"wacalls/internal/voip/call"
 	"wacalls/internal/voip/core"
 
 	"go.mau.fi/whatsmeow/types"
@@ -288,18 +290,19 @@ func (s *server) doWebRTC(sess *Session, w http.ResponseWriter, r *http.Request)
 // sessionId/contactName purely so the call's outcome can be reported back
 // into that chat when it ends (see aioutcome.go) - has no bearing on the
 // call itself.
-//
-// UNVERIFIED: never run against a live call or the assistant service.
 func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Request) {
 	callID := r.PathValue("id")
+	s.log.Info("aibridge: attach requested", "call_id", callID)
 	ac, ok := sess.reg.get(callID)
 	if !ok {
+		s.log.Warn("aibridge: attach failed, no such call in registry", "call_id", callID)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such call"})
 		return
 	}
 	bridgeURL := os.Getenv("ASSISTANT_BRIDGE_URL")
 	bridgeSecret := os.Getenv("ASSISTANT_BRIDGE_SECRET")
 	if bridgeURL == "" || bridgeSecret == "" {
+		s.log.Error("aibridge: ASSISTANT_BRIDGE_URL / ASSISTANT_BRIDGE_SECRET not configured", "call_id", callID)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ASSISTANT_BRIDGE_URL / ASSISTANT_BRIDGE_SECRET not configured"})
 		return
 	}
@@ -316,10 +319,23 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 	bridgeSessionID := "call-" + callID // ACAF bridge session id - unrelated to the app's own chat sessionId above
 	bridge, err := NewAIBridge(bridgeURL, bridgeSecret, bridgeSessionID, sampleRate, s.log)
 	if err != nil {
+		s.log.Error("aibridge: could not reach assistant", "call_id", callID, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not reach assistant: " + err.Error()})
 		return
 	}
+	s.log.Info("aibridge: connected to assistant, waiting for call to be answered before releasing audio", "call_id", callID)
+
+	// The handshake happens now (model/TTS warm and ready the instant the
+	// call connects, no boot delay for whoever's calling) but the assistant
+	// must not be heard - and pipecat's configurable ASSISTANT_GREETING can
+	// fire the moment the handshake completes - until the callee has
+	// actually picked up, not just while it's still ringing. released
+	// gates both directions of audio until then.
+	var released atomic.Bool
 	bridge.OnAssistantPCM = func(pcm []float32) {
+		if !released.Load() {
+			return
+		}
 		ac.cm.FeedCapturedPCM(pcm)
 	}
 	bridge.OnEnded = func() {
@@ -332,6 +348,20 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 		ContactName:    body.ContactName,
 		PeerIdentifier: body.PeerNumber,
 	})
+
+	// Chained, not replaced: cm.OnStateChange is already set in
+	// wireCall() (session.go) for call-record bookkeeping - overwriting it
+	// outright would silently break that, the exact class of bug that's
+	// bitten this codebase before.
+	prevOnStateChange := ac.cm.OnStateChange
+	ac.cm.OnStateChange = func(c *call.CallInfo) {
+		if prevOnStateChange != nil {
+			prevOnStateChange(c)
+		}
+		if c.IsActive() && released.CompareAndSwap(false, true) {
+			s.log.Info("aibridge: call answered, releasing assistant audio", "call_id", callID)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "attached"})
 }
 
