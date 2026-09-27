@@ -123,6 +123,18 @@ func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid type
 
 	if ackNode != nil {
 		go m.HandleCallAck(context.Background(), ackNode)
+	} else {
+		// A nil ack with no error means the offer round-tripped but the
+		// server gave us nothing to act on - previously this fell through
+		// silently: no state transition, no log, no timeout, so the call
+		// sat in "offer sent" forever with nothing telling the caller
+		// (WaCalls' HTTP API, and Audio-call- polling /call/state) that it
+		// was never going anywhere. Fail it explicitly instead.
+		m.log.Warn("call offer got an empty ack; failing the call instead of hanging", "call_id", callID)
+		m.mu.Lock()
+		_ = m.currentCall.ApplyTransition(Transition{Type: TransitionTerminated, Reason: "empty ack from server"})
+		m.emitState()
+		m.mu.Unlock()
 	}
 
 	m.log.Info("call offer sent", "call_id", callID, "peer", resolved.String())
