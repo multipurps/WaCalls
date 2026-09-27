@@ -24,11 +24,14 @@ type aiReportInfo struct {
 	PeerIdentifier string
 }
 
-// reportRelayOutcome POSTs to Audio-call-'s /api/relay-call-status, the same
-// endpoint mp-relay calls for Telegram, so a WhatsApp AI call gets the same
-// "Finished the call with X" follow-up in its originating chat thread.
-// Configured via APP_API_URL and RELAY_CALLBACK_SECRET; if either is unset,
-// this is a silent no-op - exactly like before this feature existed.
+// reportRelayOutcome POSTs to Audio-call-'s existing api/social-calling.js
+// (?action=relay-call-status) - not a standalone endpoint, because that
+// app's Vercel plan is already at its serverless-function cap. Same
+// endpoint mp-relay calls for Telegram (see that repo's bin/server.php),
+// so a WhatsApp AI call gets the same "Finished the call with X" follow-up
+// in its originating chat thread. Configured via APP_API_URL and
+// RELAY_CALLBACK_SECRET; if either is unset, this is a silent no-op -
+// exactly like before this feature existed.
 //
 // UNVERIFIED: never run against the real endpoint from here.
 func reportRelayOutcome(log *slog.Logger, info *aiReportInfo, sd call.CallStateData) {
@@ -69,7 +72,7 @@ func reportRelayOutcome(log *slog.Logger, info *aiReportInfo, sd call.CallStateD
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, appAPIURL+"/api/relay-call-status", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, appAPIURL+"/api/social-calling?action=relay-call-status", bytes.NewReader(body))
 	if err != nil {
 		log.Error("reportRelayOutcome: request build failed", "err", err)
 		return
