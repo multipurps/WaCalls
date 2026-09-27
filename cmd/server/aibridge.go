@@ -12,7 +12,20 @@ import (
 	"github.com/coder/websocket"
 )
 
-const websocketDialTimeout = 10 * time.Second
+const websocketDialTimeout = 6 * time.Second
+
+// audio-call-assistant runs on Render's free plan, which spins down after
+// inactivity. The FIRST request to a sleeping instance gets a 502 from
+// Render's edge while it cold-starts (observed: up to ~30s), not a slow
+// response - a single dial attempt gives up before the instance is even
+// up. Retrying a few times with a short backoff lets the second or third
+// attempt land after boot finishes. Kept well under the 35s
+// AbortSignal.timeout in Audio-call-'s wacallsClient.js so we fail our own
+// way instead of the caller's fetch aborting on us mid-retry.
+const (
+	dialMaxAttempts = 5
+	dialRetryDelay  = 4 * time.Second
+)
 
 // AIBridge is the AI-leg adapter: it carries raw 16 kHz mono PCM between the
 // CallManager and the Pipecat assistant service over a plain WebSocket
@@ -51,11 +64,23 @@ type AIBridge struct {
 // sessionID here is the ACAF bridge session id (an internal identifier for
 // the audio stream), not the Audio-call- app's own chat session id.
 func NewAIBridge(bridgeURL, bridgeSecret, sessionID string, sampleRate int, log *slog.Logger) (*AIBridge, error) {
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), websocketDialTimeout)
-	defer dialCancel()
-	conn, _, err := websocket.Dial(dialCtx, bridgeURL, &websocket.DialOptions{
-		HTTPHeader: map[string][]string{"X-Assistant-Session": {sessionID}},
-	})
+	var conn *websocket.Conn
+	var err error
+	for attempt := 1; attempt <= dialMaxAttempts; attempt++ {
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), websocketDialTimeout)
+		conn, _, err = websocket.Dial(dialCtx, bridgeURL, &websocket.DialOptions{
+			HTTPHeader: map[string][]string{"X-Assistant-Session": {sessionID}},
+		})
+		dialCancel()
+		if err == nil {
+			break
+		}
+		log.Warn("aibridge: dial attempt failed, retrying if attempts remain",
+			"attempt", attempt, "maxAttempts", dialMaxAttempts, "err", err)
+		if attempt < dialMaxAttempts {
+			time.Sleep(dialRetryDelay)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
