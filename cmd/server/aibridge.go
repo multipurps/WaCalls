@@ -69,7 +69,7 @@ type AIBridge struct {
 // NewAIBridge dials the assistant's ACAF endpoint and starts reading frames.
 // sessionID here is the ACAF bridge session id (an internal identifier for
 // the audio stream), not the Audio-call- app's own chat session id.
-func NewAIBridge(bridgeURL, bridgeSecret, sessionID string, sampleRate int, log *slog.Logger) (*AIBridge, error) {
+func NewAIBridge(bridgeURL, bridgeSecret, sessionID string, sampleRate int, voiceID string, log *slog.Logger) (*AIBridge, error) {
 	log = log.With("bridge_session", sessionID)
 	var conn *websocket.Conn
 	var err error
@@ -95,11 +95,17 @@ func NewAIBridge(bridgeURL, bridgeSecret, sessionID string, sampleRate int, log 
 	runCtx, cancel := context.WithCancel(context.Background())
 	b := &AIBridge{conn: conn, log: log, cancel: cancel, sampleRate: sampleRate, callID: sessionID}
 
-	hello, err := json.Marshal(map[string]any{
+	helloFields := map[string]any{
 		"type": "hello", "sessionId": sessionID, "platform": "whatsapp",
 		"sampleRate": sampleRate, "channels": 1, "encoding": "pcm_s16le",
 		"secret": bridgeSecret,
-	})
+	}
+	// Per-user cloned voice (voice_profiles.provider_voice_id). Omitted when
+	// empty so the assistant falls back to its default voice.
+	if voiceID != "" {
+		helloFields["voiceId"] = voiceID
+	}
+	hello, err := json.Marshal(helloFields)
 	if err != nil {
 		cancel()
 		_ = conn.Close(websocket.StatusInternalError, "hello marshal failed")

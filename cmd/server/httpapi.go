@@ -313,11 +313,12 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 		AppSessionID string `json:"sessionId"`
 		ContactName  string `json:"contactName"`
 		PeerNumber   string `json:"peerNumber"`
+		VoiceID      string `json:"voiceId"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	bridgeSessionID := "call-" + callID // ACAF bridge session id - unrelated to the app's own chat sessionId above
-	bridge, err := NewAIBridge(bridgeURL, bridgeSecret, bridgeSessionID, sampleRate, s.log)
+	bridge, err := NewAIBridge(bridgeURL, bridgeSecret, bridgeSessionID, sampleRate, body.VoiceID, s.log)
 	if err != nil {
 		s.log.Error("aibridge: could not reach assistant", "call_id", callID, "err", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not reach assistant: " + err.Error()})
