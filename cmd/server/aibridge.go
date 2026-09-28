@@ -49,6 +49,12 @@ type AIBridge struct {
 	outSeq     atomic.Uint32
 	sampleRate int
 
+	// Frame counters for diagnosing "connected but silent" calls: they show
+	// on which leg audio stopped (caller -> assistant, or assistant -> call).
+	inFrames  atomic.Uint64 // caller audio frames sent to the assistant
+	outFrames atomic.Uint64 // assistant audio frames received from it
+	callID    string        // for log correlation only
+
 	// OnAssistantPCM is invoked with 16 kHz mono PCM the assistant wants
 	// played into the call (its speech) - wire this to
 	// ac.cm.FeedCapturedPCM, exactly like Bridge.OnBrowserPCM.
@@ -64,6 +70,7 @@ type AIBridge struct {
 // sessionID here is the ACAF bridge session id (an internal identifier for
 // the audio stream), not the Audio-call- app's own chat session id.
 func NewAIBridge(bridgeURL, bridgeSecret, sessionID string, sampleRate int, log *slog.Logger) (*AIBridge, error) {
+	log = log.With("bridge_session", sessionID)
 	var conn *websocket.Conn
 	var err error
 	for attempt := 1; attempt <= dialMaxAttempts; attempt++ {
@@ -86,7 +93,7 @@ func NewAIBridge(bridgeURL, bridgeSecret, sessionID string, sampleRate int, log 
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	b := &AIBridge{conn: conn, log: log, cancel: cancel, sampleRate: sampleRate}
+	b := &AIBridge{conn: conn, log: log, cancel: cancel, sampleRate: sampleRate, callID: sessionID}
 
 	hello, err := json.Marshal(map[string]any{
 		"type": "hello", "sessionId": sessionID, "platform": "whatsapp",
@@ -138,6 +145,13 @@ func (b *AIBridge) readLoop(ctx context.Context) {
 			continue
 		}
 		if frame.Type == acafAudioOut {
+			n := b.outFrames.Add(1)
+			if n == 1 {
+				b.log.Info("aibridge: first assistant audio frame received",
+					"sample_rate", frame.SampleRate, "channels", frame.Channels, "payload_bytes", len(frame.Payload))
+			} else if n%250 == 0 {
+				b.log.Info("aibridge: assistant audio progress", "frames", n)
+			}
 			if cb := b.OnAssistantPCM; cb != nil {
 				cb(media.PCMInt16LEToFloat32(frame.Payload))
 			}
@@ -153,11 +167,51 @@ func (b *AIBridge) WritePCM(pcm []float32) error {
 		return nil
 	}
 	frame := acafPack(acafAudioIn, b.sampleRate, b.outSeq.Add(1), media.PCMFloat32ToInt16LE(pcm))
-	return b.conn.Write(context.Background(), websocket.MessageBinary, frame)
+	n := b.inFrames.Add(1)
+	if n == 1 {
+		b.log.Info("aibridge: first caller audio frame sent to assistant",
+			"sample_rate", b.sampleRate, "samples", len(pcm))
+	} else if n%250 == 0 {
+		b.log.Info("aibridge: caller audio progress", "frames", n)
+	}
+	err := b.conn.Write(context.Background(), websocket.MessageBinary, frame)
+	if err != nil && !b.closed.Load() {
+		b.log.Warn("aibridge: caller audio write failed", "err", err)
+	}
+	return err
+}
+
+// SignalCallActive tells the assistant the callee has answered and audio now
+// flows both ways (ACAF control message "call_active"). The assistant holds
+// its greeting until this arrives: it is connected while the phone is still
+// ringing, and any assistant audio produced before the answer is discarded by
+// the release gate in doAttachAI. Safe to call from any goroutine.
+func (b *AIBridge) SignalCallActive() {
+	if b.closed.Load() {
+		return
+	}
+	msg, err := json.Marshal(map[string]string{"type": "call_active"})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.conn.Write(ctx, websocket.MessageText, msg); err != nil {
+		b.log.Warn("aibridge: could not send call_active to assistant", "err", err)
+		return
+	}
+	b.log.Info("aibridge: call_active sent to assistant")
+}
+
+// Stats returns the audio frame counters, for the end-of-call log line.
+func (b *AIBridge) Stats() (callerFrames, assistantFrames uint64) {
+	return b.inFrames.Load(), b.outFrames.Load()
 }
 
 func (b *AIBridge) Close() {
 	if b.closed.CompareAndSwap(false, true) {
+		b.log.Info("aibridge: closed",
+			"caller_frames_sent", b.inFrames.Load(), "assistant_frames_received", b.outFrames.Load())
 		b.cancel()
 		_ = b.conn.Close(websocket.StatusNormalClosure, "call ended")
 	}

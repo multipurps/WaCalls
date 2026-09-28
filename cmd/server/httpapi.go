@@ -332,13 +332,26 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 	// actually picked up, not just while it's still ringing. released
 	// gates both directions of audio until then.
 	var released atomic.Bool
+	var droppedEarly atomic.Uint64
+	release := func(why string) {
+		if !released.CompareAndSwap(false, true) {
+			return
+		}
+		s.log.Info("aibridge: call answered, releasing assistant audio",
+			"call_id", callID, "trigger", why, "assistant_frames_dropped_while_ringing", droppedEarly.Load())
+		// Tell the assistant *after* the gate is open, so the first
+		// syllables of its greeting are not lost to the gate.
+		go bridge.SignalCallActive()
+	}
 	bridge.OnAssistantPCM = func(pcm []float32) {
 		if !released.Load() {
+			droppedEarly.Add(1)
 			return
 		}
 		ac.cm.FeedCapturedPCM(pcm)
 	}
 	bridge.OnEnded = func() {
+		s.log.Info("aibridge: assistant ended the call", "call_id", callID)
 		go sess.terminateCall(callID, core.EndCallReasonUserEnded)
 	}
 	sess.setBridge(callID, bridge)
@@ -358,9 +371,20 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 		if prevOnStateChange != nil {
 			prevOnStateChange(c)
 		}
-		if c.IsActive() && released.CompareAndSwap(false, true) {
-			s.log.Info("aibridge: call answered, releasing assistant audio", "call_id", callID)
+		if c.IsActive() {
+			release("state-change")
 		}
+	}
+
+	// The hook above only fires on FUTURE state changes. NewAIBridge can
+	// block for tens of seconds (it retries the dial to ride out a cold
+	// assistant), long enough for the callee to answer before this point.
+	// In that case no further "active" transition ever arrives and the gate
+	// would stay shut for the whole call: the callee answers and hears
+	// nothing. Check the state we are already in, after the hook is
+	// installed so an answer landing right now cannot fall between the two.
+	if cur := ac.cm.CurrentCall(); cur != nil && cur.IsActive() {
+		release("already-active-at-attach")
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "attached"})
 }
