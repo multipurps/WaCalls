@@ -33,6 +33,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/sessions/{sid}/history", s.handleHistory)
 
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	if s.staticDir != "" {
 		if _, err := os.Stat(s.staticDir); err == nil {
@@ -235,7 +236,7 @@ func (s *server) doStartCall(sess *Session, w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "operator already on a call"})
 		return
 	}
-	if max := s.sessions.maxCalls; max > 0 && sess.reg.count() >= max {
+	if max := s.sessions.maxCalls; s.sessions.refuseNew.Load() || (max > 0 && sess.reg.count() >= max) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "max concurrent calls"})
 		return
 	}
@@ -444,4 +445,14 @@ func normalizePhone(p string) string {
 		}
 	}
 	return b.String()
+}
+
+// handleHealthz is the worker heartbeat endpoint. It sits behind withAuth like
+// every other route; the manager supplies the shared secret when it probes.
+func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if s.health == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": "single"})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.health())
 }

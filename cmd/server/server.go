@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"os"
 
+	"wacalls/internal/workerhost"
+
+	_ "github.com/lib/pq"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
-	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
 )
 
@@ -17,6 +19,8 @@ type server struct {
 	sessions  *SessionManager
 	log       *slog.Logger
 	staticDir string
+	// health is set only in worker mode; nil in single-process mode.
+	health func() workerhost.Health
 }
 
 // openDB picks Postgres (Supabase) whenever DATABASE_URL is set - sessions
@@ -35,7 +39,9 @@ func openDB(dbPath string) (db *sql.DB, dialect string, err error) {
 		if err != nil {
 			return nil, "", err
 		}
-		db.SetMaxOpenConns(5)
+		// Workers set WACALLS_DB_MAX_CONNS=2 so N workers do not multiply the
+		// connection count against the Supabase pooler.
+		db.SetMaxOpenConns(envInt("WACALLS_DB_MAX_CONNS", 5))
 		return db, "postgres", nil
 	}
 	dsn := "file:" + dbPath + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)"
@@ -54,8 +60,12 @@ func newServer(ctx context.Context, dbPath, staticDir string, maxCalls int, log 
 	}
 	waDialect := map[string]string{"postgres": "postgres", "sqlite": "sqlite3"}[dialect]
 	container := sqlstore.NewWithDB(db, waDialect, waLog.Noop)
-	if err := container.Upgrade(ctx); err != nil {
-		return nil, err
+	// The manager migrates once before it starts any worker; N workers racing
+	// the same schema upgrade at boot is exactly what WACALLS_SKIP_MIGRATE avoids.
+	if os.Getenv("WACALLS_SKIP_MIGRATE") != "1" {
+		if err := container.Upgrade(ctx); err != nil {
+			return nil, err
+		}
 	}
 	store, err := newSessionStore(ctx, db, dialect)
 	if err != nil {

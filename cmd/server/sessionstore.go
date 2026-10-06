@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 )
 
@@ -67,6 +68,19 @@ func (s *sessionStore) list(ctx context.Context) ([]sessionRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// get returns nil, nil when the row does not exist.
+func (s *sessionStore) get(ctx context.Context, id string) (*sessionRow, error) {
+	q := fmt.Sprintf(`SELECT id, name, COALESCE(jid, '') FROM sessions WHERE id = %s`, s.ph(1))
+	var r sessionRow
+	if err := s.db.QueryRowContext(ctx, q, id).Scan(&r.ID, &r.Name, &r.JID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &r, nil
 }
 
 func (s *sessionStore) insert(ctx context.Context, id, name string) error {

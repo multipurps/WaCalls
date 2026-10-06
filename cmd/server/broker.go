@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// maxHistory bounds the in-memory call history (served by GET .../history).
+const maxHistory = 200
+
 type CallStatus string
 
 const (
@@ -174,6 +177,10 @@ func (b *Broker) endCall(id, reason string) {
 	ended := *c
 	delete(b.calls, id)
 	b.history = append(b.history, ended)
+	if len(b.history) > maxHistory {
+		// Was unbounded: one entry per call ever made, for the life of the process.
+		b.history = append([]CallRecord(nil), b.history[len(b.history)-maxHistory:]...)
+	}
 	owner := c.Owner
 	sessionID := c.SessionID
 	b.mu.Unlock()
@@ -260,4 +267,24 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, ev any) {
 	data, _ := json.Marshal(ev)
 	w.Write(append(append([]byte("data: "), data...), '\n', '\n'))
 	f.Flush()
+}
+
+// staleCalls lists calls that have outlived their limit, measured from when
+// the call started: ringingMax for calls that never connected, connectedMax
+// for connected ones. A limit of 0 disables that check.
+func (b *Broker) staleCalls(ringingMax, connectedMax time.Duration) []CallRecord {
+	now := time.Now().UnixMilli()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	var out []CallRecord
+	for _, c := range b.calls {
+		limit := ringingMax
+		if c.Status == StatusConnected {
+			limit = connectedMax
+		}
+		if limit > 0 && time.Duration(now-c.StartedAt)*time.Millisecond > limit {
+			out = append(out, *c)
+		}
+	}
+	return out
 }

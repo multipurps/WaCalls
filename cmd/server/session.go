@@ -125,7 +125,7 @@ func (s *Session) onIncomingOffer(ctx context.Context, evt *events.CallOffer) {
 	if callID == "" {
 		return
 	}
-	if max := s.mgr.maxCalls; max > 0 && s.reg.count() >= max {
+	if max := s.mgr.maxCalls; s.mgr.refuseNew.Load() || (max > 0 && s.reg.count() >= max) {
 		s.rejectOffer(ctx, node, evt.From)
 		return
 	}
@@ -149,6 +149,9 @@ func (s *Session) rejectOffer(ctx context.Context, node *waBinary.Node, from typ
 
 func (s *Session) handleEvent(rawEvt any) {
 	ctx := context.Background()
+	if f := s.mgr.onEvent; f != nil {
+		f(rawEvt)
+	}
 	switch evt := rawEvt.(type) {
 	case *events.Connected:
 		if id := s.client.Store.ID; id != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -20,6 +21,10 @@ type SessionManager struct {
 	waLogger  waLog.Logger
 	log       *slog.Logger
 	maxCalls  int
+
+	// Worker-mode hooks (nil/false in single-process mode).
+	onEvent   func(rawEvt any) // sees every whatsmeow event before Session handles it
+	refuseNew atomic.Bool      // set by the memory watchdog: accept no new calls
 
 	mu       sync.RWMutex
 	sessions map[string]*Session
@@ -234,4 +239,59 @@ func (m *SessionManager) disconnectAll() {
 	for _, s := range all {
 		s.shutdown()
 	}
+}
+
+// permanentError marks a startup failure that restarting cannot fix; the
+// worker maps it to workerhost.ExitPermanent.
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+// RestoreOne is the worker-mode counterpart of Restore: it loads exactly one
+// session by id (never the whole table) and, unlike Restore, never deletes
+// rows - a worker that cannot find its device exits permanently and leaves the
+// data for a human to look at.
+func (m *SessionManager) RestoreOne(ctx context.Context, id, pairPhone string) error {
+	row, err := m.store.get(ctx, id)
+	if err != nil {
+		return err // transient DB error: let the supervisor retry with backoff
+	}
+	if row == nil {
+		return permanentError{fmt.Errorf("no session row %s", id)}
+	}
+	if row.JID == "" {
+		// Created by the manager; pairing was never completed. Start pairing.
+		client := whatsmeow.NewClient(m.container.NewDevice(), m.waLogger)
+		s := newSession(m, row.ID, row.Name, client)
+		m.register(s)
+		if pairPhone != "" {
+			return s.startPairingWithCode(ctx, pairPhone)
+		}
+		return s.startPairing(ctx)
+	}
+	jid, err := types.ParseJID(row.JID)
+	if err != nil {
+		return permanentError{fmt.Errorf("unparseable jid for session %s: %w", id, err)}
+	}
+	device, err := m.container.GetDevice(ctx, jid)
+	if err != nil {
+		return err
+	}
+	if device == nil {
+		return permanentError{fmt.Errorf("no stored device for session %s", id)}
+	}
+	s := newSession(m, row.ID, row.Name, whatsmeow.NewClient(device, m.waLogger))
+	m.register(s)
+	return s.connect(ctx)
+}
+
+// only returns the single session a worker owns.
+func (m *SessionManager) only() *Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.sessions {
+		return s
+	}
+	return nil
 }
