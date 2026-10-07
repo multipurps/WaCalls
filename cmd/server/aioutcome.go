@@ -41,21 +41,41 @@ func reportRelayOutcome(log *slog.Logger, info *aiReportInfo, sd call.CallStateD
 		return
 	}
 
-	var status string
-	var durationSeconds *int
-	if sd.ConnectedAt != nil {
-		status = "completed"
-		d := sd.DurationSecs
-		durationSeconds = &d
-	} else {
-		switch sd.EndReason {
-		case core.EndCallReasonDeclined, core.EndCallReasonTimeout, core.EndCallReasonBusy, core.EndCallReasonDoNotDisturb:
-			status = "no_answer"
-		default:
-			status = "failed"
-		}
-	}
+	status, durationSeconds := outcomeStatus(sd)
+	postRelayStatus(log, info, status, durationSeconds)
+}
 
+// outcomeStatus maps how a call ended to the status the app understands.
+// Pure so it can be tested: a rejection is reported as "rejected", never folded
+// into no_answer or failed.
+func outcomeStatus(sd call.CallStateData) (string, *int) {
+	if sd.ConnectedAt != nil {
+		d := sd.DurationSecs
+		return "completed", &d
+	}
+	switch sd.EndReason {
+	case core.EndCallReasonDeclined:
+		return "rejected", nil
+	case core.EndCallReasonTimeout, core.EndCallReasonBusy, core.EndCallReasonDoNotDisturb:
+		return "no_answer", nil
+	default:
+		return "failed", nil
+	}
+}
+
+// reportRelayStatus tells the app a non-terminal provider state (currently
+// only "ringing"). Same endpoint and secret as the outcome report; the app
+// ignores a ringing report that arrives after the call was answered/ended.
+func reportRelayStatus(log *slog.Logger, info *aiReportInfo, status string) {
+	postRelayStatus(log, info, status, nil)
+}
+
+func postRelayStatus(log *slog.Logger, info *aiReportInfo, status string, durationSeconds *int) {
+	appAPIURL := os.Getenv("APP_API_URL")
+	callbackSecret := os.Getenv("RELAY_CALLBACK_SECRET")
+	if appAPIURL == "" || callbackSecret == "" || info == nil {
+		return
+	}
 	body, err := json.Marshal(map[string]any{
 		"userId":          info.AppUserID,
 		"sessionId":       info.AppSessionID,

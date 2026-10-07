@@ -357,12 +357,23 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 		go sess.terminateCall(callID, core.EndCallReasonUserEnded)
 	}
 	sess.setBridge(callID, bridge)
-	sess.reg.setAIReport(callID, &aiReportInfo{
+	reportInfo := &aiReportInfo{
 		AppUserID:      body.UserID,
 		AppSessionID:   body.AppSessionID,
 		ContactName:    body.ContactName,
 		PeerIdentifier: body.PeerNumber,
-	})
+	}
+	sess.reg.setAIReport(callID, reportInfo)
+
+	// Tell the app when WhatsApp reports the call as ringing (outbound offer
+	// sent, awaiting the callee), once. Nothing is inferred from timers: if the
+	// provider never reports it, the app never shows "Ringing".
+	var ringingReported atomic.Bool
+	reportRinging := func() {
+		if ringingReported.CompareAndSwap(false, true) {
+			go reportRelayStatus(s.log, reportInfo, "ringing")
+		}
+	}
 
 	// Chained, not replaced: cm.OnStateChange is already set in
 	// wireCall() (session.go) for call-record bookkeeping - overwriting it
@@ -372,6 +383,9 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 	ac.cm.OnStateChange = func(c *call.CallInfo) {
 		if prevOnStateChange != nil {
 			prevOnStateChange(c)
+		}
+		if c.StateData.State == core.CallStateRinging {
+			reportRinging()
 		}
 		if c.IsActive() {
 			release("state-change")
@@ -387,6 +401,8 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 	// installed so an answer landing right now cannot fall between the two.
 	if cur := ac.cm.CurrentCall(); cur != nil && cur.IsActive() {
 		release("already-active-at-attach")
+	} else if cur != nil && cur.StateData.State == core.CallStateRinging {
+		reportRinging() // it began ringing while the assistant was still connecting
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "attached"})
 }
