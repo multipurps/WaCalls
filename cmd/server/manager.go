@@ -332,6 +332,20 @@ func (m *manager) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 func (m *manager) handleProxy(w http.ResponseWriter, r *http.Request) {
 	sid := r.PathValue("sid")
+	// A worker that stopped for good (WhatsApp logged the device out) must look
+	// exactly like a logged-out session did in single mode: detail says
+	// logged_out/unpaired so the app shows "not connected", and anything else says
+	// "not paired". A generic 503 here hid the real cause from the user.
+	if st, ok := m.sup.Get(sid); ok && st.State == workerhost.StateFailed {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/sessions/"+sid {
+			if row, err := m.store.get(r.Context(), sid); err == nil && row != nil {
+				writeJSON(w, http.StatusOK, m.info(*row))
+				return
+			}
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "not paired"})
+		return
+	}
 	if m.sup.Forward(w, r, sid) {
 		return
 	}
