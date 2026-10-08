@@ -343,8 +343,19 @@ func (m *manager) handleProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "not paired"})
-		return
+		// Linking again: the app re-pairs on the SAME session id (POST .../pair or
+		// .../pair/code), exactly as it did in single mode. The dead worker cannot
+		// serve that, so bring it back first, then let the request through.
+		if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/pair") || strings.HasSuffix(r.URL.Path, "/pair/code")) {
+			if err := m.revive(r.Context(), sid); err != nil {
+				m.log.Error("could not restart session for re-linking", "session", sid, "err", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "could not restart the session, try again"})
+				return
+			}
+		} else {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "not paired"})
+			return
+		}
 	}
 	if m.sup.Forward(w, r, sid) {
 		return
@@ -358,6 +369,22 @@ func (m *manager) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such session"})
+}
+
+// revive restarts a worker that stopped because WhatsApp revoked its login, so
+// the user can link again. The revoked login is forgotten first (jid cleared),
+// otherwise the new worker would reconnect with it and be logged out again.
+func (m *manager) revive(ctx context.Context, sid string) error {
+	if err := m.store.setJID(ctx, sid, ""); err != nil {
+		return err
+	}
+	if err := m.sup.Start(m.spec(sid, "")); err != nil {
+		return err
+	}
+	wctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	_, err := m.sup.WaitReady(wctx, sid)
+	return err
 }
 
 // handleEvents: the single-process server had one global SSE stream. With one
