@@ -42,7 +42,7 @@ func reportRelayOutcome(log *slog.Logger, info *aiReportInfo, sd call.CallStateD
 	}
 
 	status, durationSeconds := outcomeStatus(sd)
-	postRelayStatus(log, info, status, durationSeconds)
+	postRelayStatus(log, info, status, durationSeconds, string(sd.EndReason))
 }
 
 // outcomeStatus maps how a call ended to the status the app understands.
@@ -67,10 +67,10 @@ func outcomeStatus(sd call.CallStateData) (string, *int) {
 // only "ringing"). Same endpoint and secret as the outcome report; the app
 // ignores a ringing report that arrives after the call was answered/ended.
 func reportRelayStatus(log *slog.Logger, info *aiReportInfo, status string) {
-	postRelayStatus(log, info, status, nil)
+	postRelayStatus(log, info, status, nil, "")
 }
 
-func postRelayStatus(log *slog.Logger, info *aiReportInfo, status string, durationSeconds *int) {
+func postRelayStatus(log *slog.Logger, info *aiReportInfo, status string, durationSeconds *int, reason string) {
 	appAPIURL := os.Getenv("APP_API_URL")
 	callbackSecret := os.Getenv("RELAY_CALLBACK_SECRET")
 	if appAPIURL == "" || callbackSecret == "" || info == nil {
@@ -81,6 +81,7 @@ func postRelayStatus(log *slog.Logger, info *aiReportInfo, status string, durati
 		"sessionId":       info.AppSessionID,
 		"platform":        "whatsapp",
 		"status":          status,
+		"reason":          reason,
 		"durationSeconds": durationSeconds,
 		"peerIdentifier":  info.PeerIdentifier,
 		"contactName":     info.ContactName,

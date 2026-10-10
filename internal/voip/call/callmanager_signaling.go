@@ -258,7 +258,20 @@ func (m *CallManager) HandleCallAck(ctx context.Context, node *waBinary.Node) {
 	m.connectRelays(endpoints)
 }
 
+// HandleCallTerminate handles a <terminate> from the peer. With no reason on the
+// stanza it is recorded as user_ended.
 func (m *CallManager) HandleCallTerminate(node *waBinary.Node) {
+	m.handleCallEnd(node, core.EndCallReasonUserEnded)
+}
+
+// HandleCallReject handles a <reject> from the peer. WhatsApp sends no reason
+// attribute on it, and a reject is the callee explicitly declining, so with no
+// reason on the stanza it is recorded as declined (not user_ended).
+func (m *CallManager) HandleCallReject(node *waBinary.Node) {
+	m.handleCallEnd(node, core.EndCallReasonDeclined)
+}
+
+func (m *CallManager) handleCallEnd(node *waBinary.Node, defaultReason core.EndCallReason) {
 	m.mu.Lock()
 	call := m.currentCall
 	if call == nil {
@@ -266,7 +279,7 @@ func (m *CallManager) HandleCallTerminate(node *waBinary.Node) {
 		return
 	}
 	info := signaling.ExtractNodeInfo(node)
-	reason := core.EndCallReasonUserEnded
+	reason := defaultReason
 	if info != nil {
 		if r := wanode.AttrString(info.InnerNode.Attrs, "reason"); r != "" {
 			reason = core.EndCallReason(r)

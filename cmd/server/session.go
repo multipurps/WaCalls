@@ -176,7 +176,7 @@ func (s *Session) handleEvent(rawEvt any) {
 		}
 	case *events.CallReject:
 		if ac, ok := s.callForEvent(evt.From, evt.Data); ok {
-			ac.cm.HandleCallTerminate(wrapCall(evt.From, evt.Data))
+			ac.cm.HandleCallReject(wrapCall(evt.From, evt.Data))
 		}
 	}
 }
