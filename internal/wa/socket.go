@@ -106,11 +106,42 @@ func (s *Socket) GetTCToken(ctx context.Context, jid types.JID) ([]byte, error) 
 	return nil, nil
 }
 
+// usyncLID asks WhatsApp's servers for a phone number's LID with a dedicated, minimal usync
+// query (the same lookup WhatsApp Web uses) and records the mapping in the store.
+func (s *Socket) usyncLID(ctx context.Context, pn types.JID) types.JID {
+	list, err := s.di().Usync(ctx, []types.JID{pn}, "query", "interactive", []waBinary.Node{{Tag: "lid"}})
+	if err != nil {
+		s.cli.Log.Warnf("LID resolve: usync lid query for %s failed: %v", pn, err)
+		return types.EmptyJID
+	}
+	for _, child := range list.GetChildren() {
+		if child.Tag != "user" {
+			continue
+		}
+		lidTag := child.GetChildByTag("lid")
+		lid := lidTag.AttrGetter().OptionalJIDOrEmpty("val")
+		if lid.IsEmpty() {
+			continue
+		}
+		if s.cli.Store != nil && s.cli.Store.LIDs != nil {
+			if err := s.cli.Store.LIDs.PutLIDMapping(ctx, lid, pn); err != nil {
+				s.cli.Log.Warnf("LID resolve: could not store mapping %s -> %s: %v", pn, lid, err)
+			}
+		}
+		return lid
+	}
+	return types.EmptyJID
+}
+
+// ResolveLIDForPN returns the LID address for a phone number. WhatsApp silently drops call
+// offers addressed to a bare phone-number JID (the offer is never acknowledged), so an outgoing
+// call must be addressed by LID. Order: stored mapping, dedicated LID query, full user-info
+// query. Falls back to the phone-number JID only if every lookup fails, and says so in the log.
 func (s *Socket) ResolveLIDForPN(ctx context.Context, pn types.JID) types.JID {
 	if pn.Server == types.HiddenUserServer {
 		return pn
 	}
-	lookup := func() types.JID {
+	stored := func() types.JID {
 		if s.cli.Store != nil && s.cli.Store.LIDs != nil {
 			if lid, err := s.cli.Store.LIDs.GetLIDForPN(ctx, pn); err == nil && !lid.IsEmpty() {
 				return lid
@@ -118,33 +149,24 @@ func (s *Socket) ResolveLIDForPN(ctx context.Context, pn types.JID) types.JID {
 		}
 		return types.EmptyJID
 	}
-	if lid := lookup(); !lid.IsEmpty() {
+	if lid := stored(); !lid.IsEmpty() {
 		return lid
 	}
-	// Offers addressed to a bare phone-number JID get an empty ack from WhatsApp (the call
-	// never rings); only LID-addressed offers are accepted. A number we have no stored LID
-	// for must be resolved against the server first. Both queries below record the mapping in
-	// the store as a side effect, so the lookup is retried after each.
-	if info, err := s.cli.GetUserInfo(ctx, []types.JID{pn}); err != nil {
+	if lid := s.usyncLID(ctx, pn); !lid.IsEmpty() {
+		return lid
+	}
+	info, err := s.cli.GetUserInfo(ctx, []types.JID{pn})
+	if err != nil {
 		s.cli.Log.Warnf("LID resolve: GetUserInfo(%s) failed: %v", pn, err)
-	} else if lid := info[pn].LID; !lid.IsEmpty() {
-		return lid
 	}
-	if lid := lookup(); !lid.IsEmpty() {
-		return lid
-	}
-	if resp, err := s.cli.IsOnWhatsApp(ctx, []string{"+" + pn.User}); err != nil {
-		s.cli.Log.Warnf("LID resolve: IsOnWhatsApp(%s) failed: %v", pn, err)
-	} else {
-		for _, r := range resp {
-			if !r.IsIn {
-				s.cli.Log.Warnf("LID resolve: %s is not on WhatsApp", pn)
-			}
+	for _, ui := range info { // the response key may not equal pn exactly, so scan all entries
+		if !ui.LID.IsEmpty() {
+			return ui.LID
 		}
 	}
-	if lid := lookup(); !lid.IsEmpty() {
+	if lid := stored(); !lid.IsEmpty() {
 		return lid
 	}
-	s.cli.Log.Warnf("LID resolve: no LID found for %s; the offer will use the phone-number address and is likely to be ignored", pn)
+	s.cli.Log.Warnf("LID resolve: no LID found for %s; the offer will use the phone-number address and WhatsApp is likely to ignore it", pn)
 	return pn
 }
