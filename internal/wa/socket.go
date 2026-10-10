@@ -110,15 +110,41 @@ func (s *Socket) ResolveLIDForPN(ctx context.Context, pn types.JID) types.JID {
 	if pn.Server == types.HiddenUserServer {
 		return pn
 	}
-	if s.cli.Store != nil && s.cli.Store.LIDs != nil {
-		if lid, err := s.cli.Store.LIDs.GetLIDForPN(ctx, pn); err == nil && !lid.IsEmpty() {
-			return lid
+	lookup := func() types.JID {
+		if s.cli.Store != nil && s.cli.Store.LIDs != nil {
+			if lid, err := s.cli.Store.LIDs.GetLIDForPN(ctx, pn); err == nil && !lid.IsEmpty() {
+				return lid
+			}
+		}
+		return types.EmptyJID
+	}
+	if lid := lookup(); !lid.IsEmpty() {
+		return lid
+	}
+	// Offers addressed to a bare phone-number JID get an empty ack from WhatsApp (the call
+	// never rings); only LID-addressed offers are accepted. A number we have no stored LID
+	// for must be resolved against the server first. Both queries below record the mapping in
+	// the store as a side effect, so the lookup is retried after each.
+	if info, err := s.cli.GetUserInfo(ctx, []types.JID{pn}); err != nil {
+		s.cli.Log.Warnf("LID resolve: GetUserInfo(%s) failed: %v", pn, err)
+	} else if lid := info[pn].LID; !lid.IsEmpty() {
+		return lid
+	}
+	if lid := lookup(); !lid.IsEmpty() {
+		return lid
+	}
+	if resp, err := s.cli.IsOnWhatsApp(ctx, []string{"+" + pn.User}); err != nil {
+		s.cli.Log.Warnf("LID resolve: IsOnWhatsApp(%s) failed: %v", pn, err)
+	} else {
+		for _, r := range resp {
+			if !r.IsIn {
+				s.cli.Log.Warnf("LID resolve: %s is not on WhatsApp", pn)
+			}
 		}
 	}
-	if info, err := s.cli.GetUserInfo(ctx, []types.JID{pn}); err == nil {
-		if lid := info[pn].LID; !lid.IsEmpty() {
-			return lid
-		}
+	if lid := lookup(); !lid.IsEmpty() {
+		return lid
 	}
+	s.cli.Log.Warnf("LID resolve: no LID found for %s; the offer will use the phone-number address and is likely to be ignored", pn)
 	return pn
 }
