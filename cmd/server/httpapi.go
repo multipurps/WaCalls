@@ -352,6 +352,12 @@ func (s *server) doAttachAI(sess *Session, w http.ResponseWriter, r *http.Reques
 		}
 		ac.cm.FeedCapturedPCM(pcm)
 	}
+	// The callee's microphone state is forwarded to the assistant, so it stops
+	// treating their audio as speech while they are muted.
+	ac.cm.OnPeerMute = func(muted bool) { bridge.SendPeerMute(muted) }
+	if ac.cm.PeerMuted() {
+		bridge.SendPeerMute(true)
+	}
 	bridge.OnEnded = func() {
 		s.log.Info("aibridge: assistant ended the call", "call_id", callID)
 		go sess.terminateCall(callID, core.EndCallReasonUserEnded)

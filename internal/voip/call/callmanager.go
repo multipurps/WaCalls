@@ -46,6 +46,9 @@ type CallManager struct {
 	OnIncoming    func(*CallInfo)
 	OnEnded       func(*CallInfo)
 	OnPeerAudio   func([]float32)
+	// OnPeerMute is invoked when the callee mutes or unmutes their microphone.
+	OnPeerMute func(bool)
+	peerMuted  bool
 }
 
 func NewCallManager(sock core.VoipSocket, log *slog.Logger) *CallManager {

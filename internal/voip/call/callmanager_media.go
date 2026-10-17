@@ -156,6 +156,14 @@ func (m *CallManager) onRelayData(data []byte) {
 		return
 	}
 	pcm = media.NormalizeFrame(pcm, codec.FrameSize())
+	// Muted callee: nothing they transmit reaches the assistant. Decoding still
+	// runs above so the decoder state stays continuous for when they unmute.
+	m.mu.Lock()
+	muted := m.peerMuted
+	m.mu.Unlock()
+	if muted {
+		return
+	}
 	if m.OnPeerAudio != nil {
 		m.OnPeerAudio(pcm)
 	}

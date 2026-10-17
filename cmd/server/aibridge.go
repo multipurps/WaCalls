@@ -209,6 +209,24 @@ func (b *AIBridge) SignalCallActive() {
 	b.log.Info("aibridge: call_active sent to assistant")
 }
 
+// SendPeerMute tells the assistant whether the callee's microphone is muted.
+// The assistant drops their audio while muted (ACAF control "peer_mute").
+// Safe to call from any goroutine.
+func (b *AIBridge) SendPeerMute(muted bool) {
+	if b.closed.Load() {
+		return
+	}
+	msg, err := json.Marshal(map[string]any{"type": "peer_mute", "muted": muted})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := b.conn.Write(ctx, websocket.MessageText, msg); err != nil {
+		b.log.Warn("aibridge: could not send peer_mute to assistant", "err", err)
+	}
+}
+
 // Stats returns the audio frame counters, for the end-of-call log line.
 func (b *AIBridge) Stats() (callerFrames, assistantFrames uint64) {
 	return b.inFrames.Load(), b.outFrames.Load()
