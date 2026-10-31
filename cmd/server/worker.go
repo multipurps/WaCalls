@@ -16,6 +16,8 @@ import (
 	"wacalls/internal/voip/core"
 	"wacalls/internal/workerhost"
 
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
@@ -154,12 +156,30 @@ func (w *workerState) onEvent(raw any) {
 		w.log.Error("another client replaced this session's stream; worker will not restart")
 		w.requestExit(workerhost.ExitPermanent)
 	case *events.ClientOutdated:
-		w.log.Error("whatsapp rejected this client version as outdated; needs a whatsmeow update")
-		w.requestExit(workerhost.ExitPermanent)
+		go w.onClientOutdated() // does a network lookup, so not on the event goroutine
 	case *events.TemporaryBan:
 		w.log.Error("whatsapp temporarily banned this account; worker will not restart")
 		w.requestExit(workerhost.ExitPermanent)
 	}
+}
+
+// onClientOutdated: WhatsApp rejected the web client version this process presents. If a newer version is
+// published, restart so the new process starts with it (see refreshWAVersion); if not, the library itself
+// is too old and only an update helps, so park instead of restart-looping against WhatsApp.
+func (w *workerState) onClientOutdated() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	latest, err := whatsmeow.GetLatestVersion(ctx, nil)
+	using := store.GetWAVersion()
+	code := outdatedExitCode(using, latest, err)
+	if code == workerhost.ExitRecycle {
+		w.log.Warn("whatsapp rejected this client version; a newer one is published, restarting to use it",
+			"using", using.String(), "latest", latest.String())
+	} else {
+		w.log.Error("whatsapp rejected this client version as outdated and no newer one is published (or it could not be looked up); needs a whatsmeow update",
+			"using", using.String(), "lookup_err", err)
+	}
+	w.requestExit(code)
 }
 
 // memoryLoop is the per-worker OOM guard. The container (512 MB on Render

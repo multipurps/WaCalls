@@ -44,6 +44,7 @@ func main() {
 			log.Error("worker mode needs -session")
 			os.Exit(2)
 		}
+		refreshWAVersion(ctx, log) // before any connection: WhatsApp rejects old client versions
 		code := runWorker(ctx, log, workerOpts{
 			addr: *addr, dbPath: *dbPath, sessionID: *sessionID, maxCalls: *maxCalls,
 			memSoftMB: *memSoftMB, memHardMB: *memHardMB,
@@ -58,6 +59,7 @@ func main() {
 		stop()
 		os.Exit(code)
 	case "single":
+		refreshWAVersion(ctx, log)
 		runSingle(ctx, stop, log, *addr, *dbPath, *staticDir, *maxCalls)
 	default:
 		log.Error("unknown -mode", "mode", *mode)
