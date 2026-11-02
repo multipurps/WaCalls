@@ -1,0 +1,33 @@
+app = "wacalls"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Secrets (Fly dashboard -> wacalls -> Secrets, or `fly secrets set -a wacalls ...`):
+#   DATABASE_URL              Supabase Postgres connection string (WhatsApp sessions live here)
+#   WACALLS_INTERNAL_SECRET   same value as WACALLS_INTERNAL_SECRET in the Emysa app
+#   ASSISTANT_BRIDGE_URL, ASSISTANT_BRIDGE_SECRET, APP_API_URL, RELAY_CALLBACK_SECRET   (AI calls / callbacks)
+[env]
+  WACALLS_MODE = "single"
+
+# One machine only: pairing and calls must hit the same process. Never stopped, so WhatsApp stays connected.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+# /healthz sits behind the secret header, so check the port instead of the path.
+[checks]
+  [checks.tcp]
+    type = "tcp"
+    port = 8080
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "20s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

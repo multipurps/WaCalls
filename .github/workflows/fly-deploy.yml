@@ -1,0 +1,40 @@
+name: Deploy to Fly.io
+
+# Manual only: Actions tab -> "Deploy to Fly.io" -> Run workflow.
+# Needs the FLY_API_TOKEN repo secret. Refuses to deploy until DATABASE_URL and WACALLS_INTERNAL_SECRET
+# are set as Fly secrets on the app, so WhatsApp sessions never end up on the machine's disk.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: wacalls
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Check the required Fly secrets exist
+        run: |
+          LIST=$(flyctl secrets list --app "$APP" 2>&1) || { echo "::error title=Could not read Fly secrets::$(echo "$LIST" | tr '\n' ' ' | cut -c1-400)"; exit 1; }
+          MISSING=""
+          for s in DATABASE_URL WACALLS_INTERNAL_SECRET; do echo "$LIST" | grep -q "$s" || MISSING="$MISSING $s"; done
+          if [ -n "$MISSING" ]; then echo "::error title=Set these Fly secrets first::Missing:$MISSING (Fly dashboard > wacalls > Secrets)"; exit 1; fi
+          echo "Required secrets are set."
+      - name: One machine only
+        run: flyctl scale count 1 --yes --app "$APP"
+      - name: Deploy
+        run: |
+          set +e
+          flyctl deploy --remote-only --app "$APP" 2>&1 | tee /tmp/deploy.log
+          CODE=${PIPESTATUS[0]}
+          if [ $CODE -ne 0 ]; then echo "::error title=flyctl deploy failed::$(tail -n 12 /tmp/deploy.log | tr '\n' ' ' | cut -c1-700)"; exit 1; fi
+      - name: Status
+        run: |
+          flyctl status --app "$APP" | tee /tmp/status.log
+          echo "::notice title=Fly status::$(tr '\n' ' ' < /tmp/status.log | cut -c1-500)"

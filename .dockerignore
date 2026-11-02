@@ -1,0 +1,6 @@
+.git
+.github
+client
+*.db
+*.db-wal
+*.db-shm
