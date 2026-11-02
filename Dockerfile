@@ -5,6 +5,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# go.sum in the repo is missing entries for lib/pq and go-qrcode, so let Go add them before building.
+RUN go mod tidy
 RUN go build -trimpath -ldflags="-s -w" -o /out/wacalls ./cmd/server
 
 FROM alpine:3.20
